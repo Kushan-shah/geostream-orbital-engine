@@ -1,0 +1,1 @@
+ALTER TABLE jobs ADD COLUMN wms_layers JSONB NOT NULL DEFAULT '[]'::jsonb;

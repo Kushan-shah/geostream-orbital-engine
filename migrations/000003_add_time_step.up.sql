@@ -1,0 +1,1 @@
+ALTER TABLE jobs ADD COLUMN time_step VARCHAR(10) DEFAULT '1d';
