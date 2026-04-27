@@ -1,0 +1,41 @@
+# ── Binaries ───────────────────────────────────────────────
+*.exe
+*.out
+geostream-api
+server
+geostream
+
+# ── Utility scripts with secrets (NEVER commit) ────────────
+clear_jobs.go
+
+# ── Environment / Secrets (NEVER commit) ───────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Runtime-generated output ────────────────────────────────
+videos/
+cache/
+.tle_cache/
+
+# ── Python ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Go toolchain ────────────────────────────────────────────
+vendor/
+
+# ── Test artifacts ──────────────────────────────────────────
+*.cover
+coverage/
+k6/results/
+
+# ── OS / IDE ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
