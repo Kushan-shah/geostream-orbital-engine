@@ -1,0 +1,675 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Distributed satellite data visualization platform capable of processing Earth observation data concurrently.",
+        "title": "GeoStream Orbital Intelligence API",
+        "termsOfService": "http://swagger.io/terms/",
+        "contact": {
+            "name": "API Support",
+            "email": "kushanj@example.com"
+        },
+        "license": {
+            "name": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+        },
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/api",
+    "paths": {
+        "/auth/login": {
+            "post": {
+                "description": "Authenticate a user and return a JWT Bearer token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "Log in a user",
+                "parameters": [
+                    {
+                        "description": "Login credentials",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.LoginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successfully logged in",
+                        "schema": {
+                            "$ref": "#/definitions/handler.AuthResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid payload",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid email or password",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/register": {
+            "post": {
+                "description": "Create a new user account with email and password",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "Register a new user",
+                "parameters": [
+                    {
+                        "description": "Registration credentials",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.RegisterRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Successfully registered",
+                        "schema": {
+                            "$ref": "#/definitions/handler.AuthResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid payload or short password",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "Email already registered",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/health/live": {
+            "get": {
+                "description": "Basic health check endpoint",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "Telemetry"
+                ],
+                "summary": "Liveness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/health/metrics": {
+            "get": {
+                "description": "Exposes worker queue depth and total processed jobs for Prometheus/Grafana monitoring",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Telemetry"
+                ],
+                "summary": "System metrics",
+                "responses": {
+                    "200": {
+                        "description": "Metrics JSON",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/jobs": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Fetch all video generation jobs for the authenticated user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Jobs"
+                ],
+                "summary": "List user jobs",
+                "responses": {
+                    "200": {
+                        "description": "List of jobs",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/model.Job"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Submit a geographic bounding box and date range to generate a timelapse video",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Jobs"
+                ],
+                "summary": "Submit a new video generation job",
+                "parameters": [
+                    {
+                        "description": "Job Configuration",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/model.CreateJobRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Job ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input or boundaries",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "Job already exists",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/jobs/progress/stream": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Server-Sent Events (SSE) endpoint providing real-time progress updates for a specific job",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "Jobs"
+                ],
+                "summary": "Stream job progress",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job UUID",
+                        "name": "job_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SSE Event Stream",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid job_id",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Streaming unsupported",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/jobs/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Fetch a specific job by its UUID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Jobs"
+                ],
+                "summary": "Get a specific job",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Job details",
+                        "schema": {
+                            "$ref": "#/definitions/model.Job"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid job ID",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Job not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Aborts the active process, deletes the S3 video, and removes the job from the DB",
+                "tags": [
+                    "Jobs"
+                ],
+                "summary": "Delete a job and its associated video",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Job successfully deleted",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid job ID",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Job not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/stream/live": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Streams a real-time HTTP MJPEG boundary stream from OpenCV. (Note: May freeze Swagger UI, use standard browser to view)",
+                "produces": [
+                    "multipart/x-mixed-replace"
+                ],
+                "tags": [
+                    "Jobs"
+                ],
+                "summary": "Stream MJPEG live video",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bounding box (e.g., -122.4,37.7,-122.3,37.8)",
+                        "name": "bbox",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start Date YYYY-MM-DD",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End Date YYYY-MM-DD",
+                        "name": "end_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "JSON array of layer objects",
+                        "name": "layers",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "MJPEG Stream",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "handler.AuthResponse": {
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string"
+                },
+                "user": {
+                    "$ref": "#/definitions/handler.UserPublic"
+                }
+            }
+        },
+        "handler.LoginRequest": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.RegisterRequest": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.UserPublic": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.CreateJobRequest": {
+            "type": "object",
+            "properties": {
+                "bbox": {
+                    "description": "[minLng, minLat, maxLng, maxLat]",
+                    "type": "array",
+                    "items": {
+                        "type": "number"
+                    }
+                },
+                "end_date": {
+                    "type": "string"
+                },
+                "fps": {
+                    "type": "integer"
+                },
+                "frame_count": {
+                    "type": "integer"
+                },
+                "start_date": {
+                    "type": "string"
+                },
+                "time_step": {
+                    "description": "e.g., \"1d\", \"1h\", \"10m\"",
+                    "type": "string"
+                },
+                "track_satellite": {
+                    "description": "e.g., \"TERRA\", \"AQUA\", \"ISS\"",
+                    "type": "string"
+                },
+                "wms_layers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.WMSLayer"
+                    }
+                }
+            }
+        },
+        "model.Job": {
+            "type": "object",
+            "properties": {
+                "activity_metrics": {
+                    "type": "array",
+                    "items": {
+                        "type": "number"
+                    }
+                },
+                "bbox": {
+                    "description": "Geospatial parameters",
+                    "type": "array",
+                    "items": {
+                        "type": "number"
+                    }
+                },
+                "cancelled_at": {
+                    "type": "string"
+                },
+                "completed_at": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "end_date": {
+                    "type": "string"
+                },
+                "error_message": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "fps": {
+                    "type": "integer"
+                },
+                "frame_count": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "processed_frames": {
+                    "type": "integer"
+                },
+                "processing_started_at": {
+                    "type": "string"
+                },
+                "request_hash": {
+                    "type": "string"
+                },
+                "retry_count": {
+                    "type": "integer"
+                },
+                "start_date": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/model.JobStatus"
+                },
+                "time_step": {
+                    "description": "e.g., \"1d\", \"1h\", \"10m\"",
+                    "type": "string"
+                },
+                "track_satellite": {
+                    "description": "e.g., \"TERRA\", \"AQUA\", \"ISS\"",
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                },
+                "video_url": {
+                    "type": "string"
+                },
+                "wms_layers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.WMSLayer"
+                    }
+                }
+            }
+        },
+        "model.JobStatus": {
+            "type": "string",
+            "enum": [
+                "PENDING",
+                "PROCESSING",
+                "COMPLETED",
+                "FAILED",
+                "CANCELLED"
+            ],
+            "x-enum-varnames": [
+                "StatusPending",
+                "StatusProcessing",
+                "StatusCompleted",
+                "StatusFailed",
+                "StatusCancelled"
+            ]
+        },
+        "model.WMSLayer": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "opacity": {
+                    "description": "0.0 to 1.0 (defaults to 1.0)",
+                    "type": "number"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

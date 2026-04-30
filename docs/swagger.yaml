@@ -1,0 +1,448 @@
+basePath: /api
+definitions:
+  handler.AuthResponse:
+    properties:
+      token:
+        type: string
+      user:
+        $ref: '#/definitions/handler.UserPublic'
+    type: object
+  handler.LoginRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+    type: object
+  handler.RegisterRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+    type: object
+  handler.UserPublic:
+    properties:
+      email:
+        type: string
+      id:
+        type: string
+    type: object
+  model.CreateJobRequest:
+    properties:
+      bbox:
+        description: '[minLng, minLat, maxLng, maxLat]'
+        items:
+          type: number
+        type: array
+      end_date:
+        type: string
+      fps:
+        type: integer
+      frame_count:
+        type: integer
+      start_date:
+        type: string
+      time_step:
+        description: e.g., "1d", "1h", "10m"
+        type: string
+      track_satellite:
+        description: e.g., "TERRA", "AQUA", "ISS"
+        type: string
+      wms_layers:
+        items:
+          $ref: '#/definitions/model.WMSLayer'
+        type: array
+    type: object
+  model.Job:
+    properties:
+      activity_metrics:
+        items:
+          type: number
+        type: array
+      bbox:
+        description: Geospatial parameters
+        items:
+          type: number
+        type: array
+      cancelled_at:
+        type: string
+      completed_at:
+        type: string
+      created_at:
+        type: string
+      end_date:
+        type: string
+      error_message:
+        type: string
+      expires_at:
+        type: string
+      fps:
+        type: integer
+      frame_count:
+        type: integer
+      id:
+        type: string
+      processed_frames:
+        type: integer
+      processing_started_at:
+        type: string
+      request_hash:
+        type: string
+      retry_count:
+        type: integer
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/model.JobStatus'
+      time_step:
+        description: e.g., "1d", "1h", "10m"
+        type: string
+      track_satellite:
+        description: e.g., "TERRA", "AQUA", "ISS"
+        type: string
+      updated_at:
+        type: string
+      user_id:
+        type: string
+      video_url:
+        type: string
+      wms_layers:
+        items:
+          $ref: '#/definitions/model.WMSLayer'
+        type: array
+    type: object
+  model.JobStatus:
+    enum:
+    - PENDING
+    - PROCESSING
+    - COMPLETED
+    - FAILED
+    - CANCELLED
+    type: string
+    x-enum-varnames:
+    - StatusPending
+    - StatusProcessing
+    - StatusCompleted
+    - StatusFailed
+    - StatusCancelled
+  model.WMSLayer:
+    properties:
+      name:
+        type: string
+      opacity:
+        description: 0.0 to 1.0 (defaults to 1.0)
+        type: number
+      url:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: kushanj@example.com
+    name: API Support
+  description: Distributed satellite data visualization platform capable of processing
+    Earth observation data concurrently.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: GeoStream Orbital Intelligence API
+  version: "1.0"
+paths:
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate a user and return a JWT Bearer token
+      parameters:
+      - description: Login credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Successfully logged in
+          schema:
+            $ref: '#/definitions/handler.AuthResponse'
+        "400":
+          description: Invalid payload
+          schema:
+            type: string
+        "401":
+          description: Invalid email or password
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: Log in a user
+      tags:
+      - Authentication
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Create a new user account with email and password
+      parameters:
+      - description: Registration credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Successfully registered
+          schema:
+            $ref: '#/definitions/handler.AuthResponse'
+        "400":
+          description: Invalid payload or short password
+          schema:
+            type: string
+        "409":
+          description: Email already registered
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: Register a new user
+      tags:
+      - Authentication
+  /health/live:
+    get:
+      description: Basic health check endpoint
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Liveness probe
+      tags:
+      - Telemetry
+  /health/metrics:
+    get:
+      description: Exposes worker queue depth and total processed jobs for Prometheus/Grafana
+        monitoring
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Metrics JSON
+          schema:
+            additionalProperties: true
+            type: object
+      summary: System metrics
+      tags:
+      - Telemetry
+  /jobs:
+    get:
+      description: Fetch all video generation jobs for the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of jobs
+          schema:
+            items:
+              $ref: '#/definitions/model.Job'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: List user jobs
+      tags:
+      - Jobs
+    post:
+      consumes:
+      - application/json
+      description: Submit a geographic bounding box and date range to generate a timelapse
+        video
+      parameters:
+      - description: Job Configuration
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/model.CreateJobRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Job ID
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Invalid input or boundaries
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            type: string
+        "409":
+          description: Job already exists
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Submit a new video generation job
+      tags:
+      - Jobs
+  /jobs/{id}:
+    delete:
+      description: Aborts the active process, deletes the S3 video, and removes the
+        job from the DB
+      parameters:
+      - description: Job UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: Job successfully deleted
+          schema:
+            type: string
+        "400":
+          description: Invalid job ID
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            type: string
+        "404":
+          description: Job not found
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Delete a job and its associated video
+      tags:
+      - Jobs
+    get:
+      description: Fetch a specific job by its UUID
+      parameters:
+      - description: Job UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Job details
+          schema:
+            $ref: '#/definitions/model.Job'
+        "400":
+          description: Invalid job ID
+          schema:
+            type: string
+        "404":
+          description: Job not found
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Get a specific job
+      tags:
+      - Jobs
+  /jobs/progress/stream:
+    get:
+      description: Server-Sent Events (SSE) endpoint providing real-time progress
+        updates for a specific job
+      parameters:
+      - description: Job UUID
+        in: query
+        name: job_id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE Event Stream
+          schema:
+            type: string
+        "400":
+          description: Invalid job_id
+          schema:
+            type: string
+        "500":
+          description: Streaming unsupported
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Stream job progress
+      tags:
+      - Jobs
+  /stream/live:
+    get:
+      description: 'Streams a real-time HTTP MJPEG boundary stream from OpenCV. (Note:
+        May freeze Swagger UI, use standard browser to view)'
+      parameters:
+      - description: Bounding box (e.g., -122.4,37.7,-122.3,37.8)
+        in: query
+        name: bbox
+        type: string
+      - description: Start Date YYYY-MM-DD
+        in: query
+        name: start_date
+        type: string
+      - description: End Date YYYY-MM-DD
+        in: query
+        name: end_date
+        type: string
+      - description: JSON array of layer objects
+        in: query
+        name: layers
+        type: string
+      produces:
+      - multipart/x-mixed-replace
+      responses:
+        "200":
+          description: MJPEG Stream
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Stream MJPEG live video
+      tags:
+      - Jobs
+securityDefinitions:
+  ApiKeyAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
