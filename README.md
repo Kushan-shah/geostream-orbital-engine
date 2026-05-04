@@ -8,8 +8,7 @@
 [![AWS S3](https://img.shields.io/badge/AWS-S3-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/s3/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-
-> **Frontend repo:** [geostream-frontend](https://github.com/your-username/geostream-frontend)
+> **Frontend repo:** [geostream-ui](https://github.com/Kushan-shah/geostream-ui)
 
 ---
 
@@ -101,8 +100,8 @@ Server Crashes:    0           (OOM prevented by bounded channel)
 
 ```bash
 # 1. Clone
-git clone https://github.com/your-username/geostream-backend.git
-cd geostream-backend
+git clone https://github.com/Kushan-shah/geostream-orbital-engine.git
+cd geostream-orbital-engine
 
 # 2. Configure environment
 cp .env.example .env
@@ -183,5 +182,5 @@ python scripts/test_pipeline.py
 ---
 
 ## 📜 License
-Copyright 2026 Kushan J  
+Copyright 2026 Kushan Shah  
 Licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for third-party attributions.
