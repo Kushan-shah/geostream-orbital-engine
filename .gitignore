@@ -2,7 +2,7 @@
 *.exe
 *.out
 geostream-api
-server
+/server
 geostream
 
 # ── Utility scripts with secrets (NEVER commit) ────────────
