@@ -8,7 +8,9 @@
 [![AWS S3](https://img.shields.io/badge/AWS-S3-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/s3/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-> **Frontend repo:** [geostream-ui](https://github.com/Kushan-shah/geostream-ui)
+> 🚀 **Live Demo:** [geo.kushan.codes](https://geo.kushan.codes)
+> 📡 **Live API:** [api.geo.kushan.codes/health/live](https://api.geo.kushan.codes/health/live)
+> 🔗 **Frontend repo:** [geostream-ui](https://github.com/Kushan-shah/geostream-ui)
 
 ---
 
