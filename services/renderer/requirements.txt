@@ -1,0 +1,23 @@
+# GeoStream Renderer Microservice — Dependencies
+# FastAPI + Uvicorn (ASGI server)
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+
+# Redis client (optional — graceful fallback to disk-only cache)
+redis==5.3.0
+
+# Video processing
+opencv-python-headless==4.11.0.86
+numpy==2.2.6
+requests==2.32.3
+
+# Orbital tracking (SGP4 propagation)
+sgp4==2.24
+
+# Pydantic (included with FastAPI, pinned for consistency)
+pydantic==2.11.1
+
+# gRPC (binary Protocol Buffers inter-service communication)
+grpcio==1.80.0
+grpcio-tools==1.80.0
+protobuf==6.33.6
