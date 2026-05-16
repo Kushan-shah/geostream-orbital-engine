@@ -17,47 +17,56 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
-	
+
 	"github.com/kushanj/geo-backend/internal/model"
+	"github.com/kushanj/geo-backend/internal/queue"
 )
 
 type Pipeline struct {
-	jobChan       chan uuid.UUID      // bounded queue (buffered channel)
-	wg            sync.WaitGroup      // tracks active workers
-	cancelFunc    context.CancelFunc  // for graceful shutdown
-	jobRepo       *model.JobRepository
-	s3Uploader    *S3Uploader         // real AWS S3 uploader (nil if not configured)
-	leaseDuration time.Duration
-	jobCancels    sync.Map            // tracks active job context cancels
-	TotalProcessed uint64             // telemetry metric
+	queue              queue.JobQueue         // pluggable: ChannelQueue or RabbitMQQueue
+	wg                 sync.WaitGroup         // tracks active workers
+	cancelFunc         context.CancelFunc     // for graceful shutdown
+	jobRepo            *model.JobRepository
+	s3Uploader         *S3Uploader            // real AWS S3 uploader (nil if not configured)
+	rendererClient     *RendererClient        // HTTP client for FastAPI renderer (nil if not configured)
+	grpcRendererClient *GRPCRendererClient    // gRPC client (preferred over HTTP, nil if not configured)
+	leaseDuration      time.Duration
+	jobCancels         sync.Map               // tracks active job context cancels
+	TotalProcessed     uint64                 // telemetry metric
 }
 
-func NewPipeline(workerCount, queueSize int, jobRepo *model.JobRepository, s3Uploader *S3Uploader) *Pipeline {
+// NewPipeline creates a pipeline with a pluggable queue and optional renderer client.
+// If rendererClient is nil, jobs are processed via subprocess (original behavior).
+// If queue is ChannelQueue, behavior is identical to the original buffered channel.
+func NewPipeline(workerCount int, jobQueue queue.JobQueue, jobRepo *model.JobRepository, s3Uploader *S3Uploader, rendererClient *RendererClient, grpcRendererClient *GRPCRendererClient) *Pipeline {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pipeline{
-		jobChan:       make(chan uuid.UUID, queueSize),
-		cancelFunc:    cancel,
-		jobRepo:       jobRepo,
-		s3Uploader:    s3Uploader,
-		leaseDuration: 5 * time.Minute,
+		queue:              jobQueue,
+		cancelFunc:         cancel,
+		jobRepo:            jobRepo,
+		s3Uploader:         s3Uploader,
+		rendererClient:     rendererClient,
+		grpcRendererClient: grpcRendererClient,
+		leaseDuration:      5 * time.Minute,
+	}
+
+	// Start consuming from the queue
+	jobChan, err := jobQueue.Consume(ctx)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to start consuming from job queue")
 	}
 
 	for i := 0; i < workerCount; i++ {
 		p.wg.Add(1)
-		go p.worker(ctx, i)
+		go p.worker(ctx, i, jobChan)
 	}
 
 	return p
 }
 
-// SubmitJob is called by the HTTP handler
+// SubmitJob is called by the HTTP handler to enqueue a job.
 func (p *Pipeline) SubmitJob(jobID uuid.UUID) error {
-	select {
-	case p.jobChan <- jobID:
-		return nil // successfully enqueued
-	default:
-		return fmt.Errorf("queue is full (backpressure applied)") // returns 503
-	}
+	return p.queue.Publish(context.Background(), jobID)
 }
 
 // DeleteVideoFromS3 asks the configured S3 uploader to permanently delete the video.
@@ -66,14 +75,14 @@ func (p *Pipeline) DeleteVideoFromS3(ctx context.Context, jobID uuid.UUID) error
 	if p.s3Uploader != nil {
 		return p.s3Uploader.DeleteVideo(ctx, jobID)
 	}
-	
+
 	// Delete local files if S3 is not in use
 	videoPath := filepath.Join("videos", fmt.Sprintf("%s.mp4", jobID.String()))
 	metricsPath := filepath.Join("videos", fmt.Sprintf("%s_metrics.json", jobID.String()))
-	
+
 	_ = os.Remove(videoPath)
 	_ = os.Remove(metricsPath)
-	
+
 	return nil
 }
 
@@ -85,19 +94,19 @@ func (p *Pipeline) AbortJob(jobID uuid.UUID) {
 	}
 }
 
-// QueueDepth returns the current number of jobs waiting in the channel.
+// QueueDepth returns the current number of jobs waiting in the queue.
 func (p *Pipeline) QueueDepth() int {
-	return len(p.jobChan)
+	return p.queue.Depth()
 }
 
-func (p *Pipeline) worker(ctx context.Context, id int) {
+func (p *Pipeline) worker(ctx context.Context, id int, jobChan <-chan uuid.UUID) {
 	defer p.wg.Done()
 	workerID := fmt.Sprintf("worker-%d-%s", id, uuid.New().String()[:8])
 	log.Info().Str("worker_id", workerID).Msg("Worker started")
 
 	for {
 		select {
-		case jobID, ok := <-p.jobChan:
+		case jobID, ok := <-jobChan:
 			if !ok {
 				log.Info().Str("worker_id", workerID).Msg("Channel closed, shutting down")
 				return
@@ -144,88 +153,36 @@ func (p *Pipeline) processJob(ctx context.Context, jobID uuid.UUID, workerID str
 	hbCancel := p.startHeartbeat(jobCtx, jobID, workerID)
 	defer hbCancel()
 
-	// OpenCV Stage: Generate and Encode Video directly to MP4
-	frameCount := job.FrameCount
-	if frameCount > 300 {
-		frameCount = 300
-	}
-	fps := job.FPS
-	if fps <= 0 { fps = 30 }
-	
-	videoPath := fmt.Sprintf("videos/%s.mp4", jobID.String())
-	
-	// Create bbox string
-	bboxStr := "-122.4194,37.7749,-122.3894,37.8049"
-	if len(job.Bbox) == 4 {
-		bboxStr = fmt.Sprintf("%f,%f,%f,%f", job.Bbox[0], job.Bbox[1], job.Bbox[2], job.Bbox[3])
-	}
-	
-	// Dates
-	start := time.Now().AddDate(0, 0, -10).Format("2006-01-02")
-	end := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
-	if job.StartDate != nil { start = job.StartDate.Format("2006-01-02") }
-	if job.EndDate != nil { end = job.EndDate.Format("2006-01-02") }
+	// ── Rendering Strategy (Fallback Chain) ──
+	// Priority: gRPC (fastest) → HTTP (fallback) → subprocess (original)
+	var videoPath string
+	var metricsBytes []byte
 
-	importJSON, _ := json.Marshal(job.WMSLayers)
-	layersStr := string(importJSON)
-	if len(job.WMSLayers) == 0 {
-		layersStr = `[{"url":"https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi","name":"MODIS_Terra_Thermal_Anomalies_All"}]`
-	}
-
-	timeStep := job.TimeStep
-	if timeStep == "" { timeStep = "1d" }
-
-	cmdArgs := []string{"scripts/generate_video.py",
-		fmt.Sprintf("--job_id=%s", jobID.String()),
-		fmt.Sprintf("--bbox=%s", bboxStr),
-		fmt.Sprintf("--start=%s", start),
-		fmt.Sprintf("--end=%s", end),
-		fmt.Sprintf("--fps=%d", fps),
-		fmt.Sprintf("--frames=%d", frameCount),
-		fmt.Sprintf("--layers=%s", layersStr),
-		fmt.Sprintf("--freq=%s", timeStep),
-		fmt.Sprintf("--out=%s", videoPath),
-	}
-	if job.TrackSatellite != "" {
-		cmdArgs = append(cmdArgs, fmt.Sprintf("--track=%s", job.TrackSatellite))
-	}
-	cmd := exec.CommandContext(jobCtx, "python", cmdArgs...)
-	
-	// Pipe stdout for real-time progress parsing
-	stdoutPipe, pipeErr := cmd.StdoutPipe()
-	if pipeErr != nil {
-		log.Error().Err(pipeErr).Msg("Failed to create stdout pipe")
-		_ = p.jobRepo.MarkFailed(ctx, jobID, workerID, "pipe error")
-		return
-	}
-	cmd.Stderr = os.Stderr // let Python warnings flow to Go stderr
-
-	if err := cmd.Start(); err != nil {
-		log.Error().Err(err).Msg("OpenCV script failed to start")
-		p.checkCancelOrError(jobCtx, jobID, workerID, fmt.Errorf("opencv start error: %w", err))
-		return
-	}
-
-	// Parse progress JSON lines from stdout
-	type ProgressMsg struct {
-		Progress int `json:"progress"`
-		Total    int `json:"total"`
-	}
-	scanner := bufio.NewScanner(stdoutPipe)
-	for scanner.Scan() {
-		line := scanner.Text()
-		var msg ProgressMsg
-		if err := json.Unmarshal([]byte(line), &msg); err == nil && msg.Total > 0 {
-			_ = p.jobRepo.UpdateProgress(ctx, jobID, msg.Progress, msg.Total)
+	if p.grpcRendererClient != nil {
+		// Preferred: gRPC/Protobuf (binary, ~10x faster serialization)
+		videoPath, metricsBytes, err = p.renderViaGRPC(jobCtx, job, workerID)
+		if err != nil {
+			log.Warn().Err(err).Str("job_id", jobID.String()).Msg("gRPC renderer failed, trying HTTP fallback")
+			err = nil // reset for next attempt
 		}
 	}
+	if videoPath == "" && p.rendererClient != nil {
+		// Fallback: HTTP/JSON
+		videoPath, metricsBytes, err = p.renderViaService(jobCtx, job, workerID)
+		if err != nil {
+			log.Warn().Err(err).Str("job_id", jobID.String()).Msg("HTTP renderer failed, falling back to subprocess")
+			err = nil
+		}
+	}
+	if videoPath == "" {
+		// Final fallback: subprocess (original behavior, always works)
+		videoPath, metricsBytes, err = p.renderViaSubprocess(jobCtx, job, workerID)
+	}
 
-	if err := cmd.Wait(); err != nil {
-		log.Error().Err(err).Msg("OpenCV script failed")
-		p.checkCancelOrError(jobCtx, jobID, workerID, fmt.Errorf("opencv error: %w", err))
+	if err != nil {
+		p.checkCancelOrError(jobCtx, jobID, workerID, err)
 		return
 	}
-	log.Info().Str("job_id", jobID.String()).Msg("OpenCV video generated successfully")
 
 	// Stage 3: Verify Ownership -> Finalize
 	validOwner, err := p.jobRepo.VerifyOwnership(ctx, jobID, workerID)
@@ -248,14 +205,6 @@ func (p *Pipeline) processJob(ctx context.Context, jobID uuid.UUID, workerID str
 		videoURL = fmt.Sprintf("/videos/%s.mp4", jobID.String())
 	}
 
-	// Read metrics file generated by Python
-	metricsPath := filepath.Join("videos", fmt.Sprintf("%s_metrics.json", jobID.String()))
-	var metricsBytes []byte
-	metricsBytes, readErr := os.ReadFile(metricsPath)
-	if readErr != nil {
-		log.Warn().Err(readErr).Str("job_id", jobID.String()).Msg("Could not read metrics JSON file, saving without metrics")
-	}
-
 	err = p.jobRepo.MarkCompleted(jobCtx, jobID, workerID, videoURL, metricsBytes)
 	if err != nil {
 		log.Error().Err(err).Str("job_id", jobID.String()).Msg("Failed to mark job completed")
@@ -264,6 +213,184 @@ func (p *Pipeline) processJob(ctx context.Context, jobID uuid.UUID, workerID str
 		atomic.AddUint64(&p.TotalProcessed, 1)
 		log.Info().Str("job_id", jobID.String()).Str("video_url", videoURL[:min(80, len(videoURL))]).Msg("Job successfully completed")
 	}
+}
+
+// renderViaGRPC dispatches the render job via gRPC/Protobuf (preferred path).
+func (p *Pipeline) renderViaGRPC(ctx context.Context, job *model.Job, workerID string) (string, []byte, error) {
+	req := p.buildRendererRequest(job)
+	resp, err := p.grpcRendererClient.Render(ctx, req)
+	if err != nil {
+		return "", nil, fmt.Errorf("gRPC renderer error: %w", err)
+	}
+	metricsJSON, _ := json.Marshal(resp.Metrics)
+	return req.OutputPath, metricsJSON, nil
+}
+
+// renderViaService dispatches the render job to the FastAPI microservice via HTTP.
+func (p *Pipeline) renderViaService(ctx context.Context, job *model.Job, workerID string) (string, []byte, error) {
+	req := p.buildRendererRequest(job)
+	resp, err := p.rendererClient.Render(ctx, req)
+	if err != nil {
+		return "", nil, fmt.Errorf("HTTP renderer error: %w", err)
+	}
+	metricsJSON, _ := json.Marshal(resp.Metrics)
+	return req.OutputPath, metricsJSON, nil
+}
+
+// buildRendererRequest constructs the shared request payload for both gRPC and HTTP paths.
+func (p *Pipeline) buildRendererRequest(job *model.Job) RendererRequest {
+	videoPath := fmt.Sprintf("videos/%s.mp4", job.ID.String())
+
+	start := time.Now().AddDate(0, 0, -10).Format("2006-01-02")
+	end := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
+	if job.StartDate != nil {
+		start = job.StartDate.Format("2006-01-02")
+	}
+	if job.EndDate != nil {
+		end = job.EndDate.Format("2006-01-02")
+	}
+
+	var layers []RendererLayer
+	for _, l := range job.WMSLayers {
+		opacity := l.Opacity
+		if opacity <= 0 {
+			opacity = 1.0
+		}
+		layers = append(layers, RendererLayer{
+			URL:     l.URL,
+			Name:    l.Name,
+			Opacity: opacity,
+		})
+	}
+	if len(layers) == 0 {
+		layers = []RendererLayer{{
+			URL:     "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi",
+			Name:    "MODIS_Terra_Thermal_Anomalies_All",
+			Opacity: 1.0,
+		}}
+	}
+
+	frameCount := job.FrameCount
+	if frameCount > 300 {
+		frameCount = 300
+	}
+	fps := job.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+	timeStep := job.TimeStep
+	if timeStep == "" {
+		timeStep = "1d"
+	}
+
+	return RendererRequest{
+		JobID:          job.ID.String(),
+		Bbox:           job.Bbox,
+		StartDate:      start,
+		EndDate:        end,
+		FPS:            fps,
+		FrameCount:     frameCount,
+		Layers:         layers,
+		TimeStep:       timeStep,
+		TrackSatellite: job.TrackSatellite,
+		OutputPath:     videoPath,
+	}
+}
+
+// renderViaSubprocess runs the Python script directly (original behavior, zero changes).
+func (p *Pipeline) renderViaSubprocess(ctx context.Context, job *model.Job, workerID string) (string, []byte, error) {
+	frameCount := job.FrameCount
+	if frameCount > 300 {
+		frameCount = 300
+	}
+	fps := job.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+
+	videoPath := fmt.Sprintf("videos/%s.mp4", job.ID.String())
+
+	// Create bbox string
+	bboxStr := "-122.4194,37.7749,-122.3894,37.8049"
+	if len(job.Bbox) == 4 {
+		bboxStr = fmt.Sprintf("%f,%f,%f,%f", job.Bbox[0], job.Bbox[1], job.Bbox[2], job.Bbox[3])
+	}
+
+	// Dates
+	start := time.Now().AddDate(0, 0, -10).Format("2006-01-02")
+	end := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
+	if job.StartDate != nil {
+		start = job.StartDate.Format("2006-01-02")
+	}
+	if job.EndDate != nil {
+		end = job.EndDate.Format("2006-01-02")
+	}
+
+	importJSON, _ := json.Marshal(job.WMSLayers)
+	layersStr := string(importJSON)
+	if len(job.WMSLayers) == 0 {
+		layersStr = `[{"url":"https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi","name":"MODIS_Terra_Thermal_Anomalies_All"}]`
+	}
+
+	timeStep := job.TimeStep
+	if timeStep == "" {
+		timeStep = "1d"
+	}
+
+	cmdArgs := []string{"scripts/generate_video.py",
+		fmt.Sprintf("--job_id=%s", job.ID.String()),
+		fmt.Sprintf("--bbox=%s", bboxStr),
+		fmt.Sprintf("--start=%s", start),
+		fmt.Sprintf("--end=%s", end),
+		fmt.Sprintf("--fps=%d", fps),
+		fmt.Sprintf("--frames=%d", frameCount),
+		fmt.Sprintf("--layers=%s", layersStr),
+		fmt.Sprintf("--freq=%s", timeStep),
+		fmt.Sprintf("--out=%s", videoPath),
+	}
+	if job.TrackSatellite != "" {
+		cmdArgs = append(cmdArgs, fmt.Sprintf("--track=%s", job.TrackSatellite))
+	}
+	cmd := exec.CommandContext(ctx, "python", cmdArgs...)
+
+	// Pipe stdout for real-time progress parsing
+	stdoutPipe, pipeErr := cmd.StdoutPipe()
+	if pipeErr != nil {
+		return "", nil, fmt.Errorf("pipe error: %w", pipeErr)
+	}
+	cmd.Stderr = os.Stderr // let Python warnings flow to Go stderr
+
+	if err := cmd.Start(); err != nil {
+		return "", nil, fmt.Errorf("opencv start error: %w", err)
+	}
+
+	// Parse progress JSON lines from stdout
+	type ProgressMsg struct {
+		Progress int `json:"progress"`
+		Total    int `json:"total"`
+	}
+	scanner := bufio.NewScanner(stdoutPipe)
+	for scanner.Scan() {
+		line := scanner.Text()
+		var msg ProgressMsg
+		if err := json.Unmarshal([]byte(line), &msg); err == nil && msg.Total > 0 {
+			_ = p.jobRepo.UpdateProgress(ctx, job.ID, msg.Progress, msg.Total)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return "", nil, fmt.Errorf("opencv error: %w", err)
+	}
+	log.Info().Str("job_id", job.ID.String()).Msg("OpenCV video generated successfully (subprocess)")
+
+	// Read metrics file generated by Python
+	metricsPath := filepath.Join("videos", fmt.Sprintf("%s_metrics.json", job.ID.String()))
+	metricsBytes, readErr := os.ReadFile(metricsPath)
+	if readErr != nil {
+		log.Warn().Err(readErr).Str("job_id", job.ID.String()).Msg("Could not read metrics JSON file")
+	}
+
+	return videoPath, metricsBytes, nil
 }
 
 func (p *Pipeline) startHeartbeat(ctx context.Context, jobID uuid.UUID, workerID string) context.CancelFunc {
@@ -317,8 +444,8 @@ func (p *Pipeline) GracefulShutdown() {
 	// 1. Cancel context FIRST so workers see the signal
 	p.cancelFunc()
 
-	// 2. Close channel AFTER context cancel (workers check ctx.Err() before reading)
-	close(p.jobChan)
+	// 2. Close the queue (signals workers to drain)
+	p.queue.Close()
 
 	// 3. Wait for all workers to drain (30s timeout)
 	done := make(chan struct{})
@@ -356,11 +483,10 @@ func (p *Pipeline) StartupRecovery(ctx context.Context) {
 	}
 
 	for _, jobID := range pending {
-		select {
-		case p.jobChan <- jobID:
+		if err := p.queue.Publish(ctx, jobID); err != nil {
+			log.Warn().Str("job_id", jobID.String()).Msg("Queue full during recovery, skipping")
+		} else {
 			log.Info().Str("job_id", jobID.String()).Msg("Re-enqueued pending job")
-		default:
-			log.Warn().Str("job_id", jobID.String()).Msg("Channel full during recovery, skipping")
 		}
 	}
 }
@@ -381,11 +507,10 @@ func (p *Pipeline) StartScheduledRecovery(ctx context.Context) {
 					continue
 				}
 				for _, jobID := range recovered {
-					select {
-					case p.jobChan <- jobID:
+					if err := p.queue.Publish(ctx, jobID); err != nil {
+						log.Warn().Str("job_id", jobID.String()).Msg("Queue full during sweep, skipping")
+					} else {
 						log.Info().Str("job_id", jobID.String()).Msg("Re-enqueued recovered job")
-					default:
-						log.Warn().Str("job_id", jobID.String()).Msg("Channel full during sweep, skipping")
 					}
 				}
 			}

@@ -19,6 +19,12 @@ type Config struct {
 	QueueSize    int
 	JWTSecret    string
 	CORSOrigin   string
+
+	// Microservice URLs (feature-flagged: empty = disabled, uses fallback)
+	RendererURL     string // FastAPI renderer HTTP URL (e.g., http://renderer:8000)
+	RendererGRPCURL string // Renderer gRPC address (e.g., renderer:50051) — preferred over HTTP
+	RabbitMQURL     string // AMQP connection string (e.g., amqp://guest:guest@rabbitmq:5672/)
+	RedisURL        string // Redis connection string (e.g., redis://localhost:6379)
 }
 
 func LoadConfig() *Config {
@@ -44,6 +50,12 @@ func LoadConfig() *Config {
 		QueueSize:   queueSize,
 		JWTSecret:   getEnv("JWT_SECRET", "super-secret-key-change-in-prod"),
 		CORSOrigin:  getEnv("CORS_ORIGIN", "http://localhost:3000"),
+
+		// Microservice URLs — empty = feature disabled (uses fallback path)
+		RendererURL:     getEnv("RENDERER_URL", ""),
+		RendererGRPCURL: getEnv("RENDERER_GRPC_URL", ""),
+		RabbitMQURL:     getEnv("RABBITMQ_URL", ""),
+		RedisURL:        getEnv("REDIS_URL", ""),
 	}
 }
 

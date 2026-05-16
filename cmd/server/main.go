@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -22,9 +23,11 @@ import (
 	"github.com/kushanj/geo-backend/internal/handler"
 	mymiddleware "github.com/kushanj/geo-backend/internal/middleware"
 	"github.com/kushanj/geo-backend/internal/model"
+	"github.com/kushanj/geo-backend/internal/queue"
 	"github.com/kushanj/geo-backend/internal/worker"
 	
 	_ "github.com/kushanj/geo-backend/docs"
+	_ "github.com/kushanj/geo-backend/internal/metrics" // register Prometheus metrics
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
@@ -98,7 +101,43 @@ func main() {
 		}
 	}
 
-	pipeline := worker.NewPipeline(cfg.WorkerCount, cfg.QueueSize, jobRepo, s3Uploader)
+	// 4c. Initialize Job Queue — RabbitMQ or in-memory channel (feature-flagged)
+	var jobQueue queue.JobQueue
+	if cfg.RabbitMQURL != "" {
+		rmq, rmqErr := queue.NewRabbitMQQueue(cfg.RabbitMQURL, cfg.QueueSize)
+		if rmqErr != nil {
+			log.Warn().Err(rmqErr).Msg("RabbitMQ unavailable — falling back to in-memory channel queue")
+			jobQueue = queue.NewChannelQueue(cfg.QueueSize)
+		} else {
+			jobQueue = rmq
+			log.Info().Msg("Job queue: RabbitMQ (durable, persistent delivery)")
+		}
+	} else {
+		jobQueue = queue.NewChannelQueue(cfg.QueueSize)
+		log.Info().Msg("Job queue: In-memory channel (default)")
+	}
+
+	// 4d. Initialize Renderer Client — gRPC preferred → HTTP fallback → subprocess fallback
+	var rendererClient *worker.RendererClient
+	var grpcRendererClient *worker.GRPCRendererClient
+	if cfg.RendererGRPCURL != "" {
+		var grpcErr error
+		grpcRendererClient, grpcErr = worker.NewGRPCRendererClient(cfg.RendererGRPCURL)
+		if grpcErr != nil {
+			log.Warn().Err(grpcErr).Msg("gRPC renderer unavailable — trying HTTP fallback")
+		} else {
+			log.Info().Str("target", cfg.RendererGRPCURL).Msg("Renderer: gRPC/Protobuf (with circuit breaker)")
+		}
+	}
+	if grpcRendererClient == nil && cfg.RendererURL != "" {
+		rendererClient = worker.NewRendererClient(cfg.RendererURL)
+		log.Info().Str("url", cfg.RendererURL).Msg("Renderer: HTTP/JSON (with circuit breaker)")
+	}
+	if grpcRendererClient == nil && rendererClient == nil {
+		log.Info().Msg("Renderer: Python subprocess (default)")
+	}
+
+	pipeline := worker.NewPipeline(cfg.WorkerCount, jobQueue, jobRepo, s3Uploader, rendererClient, grpcRendererClient)
 
 	// 4a. Run Startup Recovery (re-enqueue orphaned jobs from last crash)
 	pipeline.StartupRecovery(ctx)
@@ -135,6 +174,9 @@ func main() {
 	// Public Routes
 	r.Get("/health/live", healthHandler.Live)
 	r.Get("/health/metrics", healthHandler.Metrics)
+
+	// Prometheus Metrics Endpoint (for Prometheus scraper)
+	r.Handle("/metrics", promhttp.Handler())
 
 	// Swagger UI
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
