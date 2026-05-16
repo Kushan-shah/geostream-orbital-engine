@@ -4,6 +4,10 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://golang.org/)
 [![Python Version](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![RabbitMQ](https://img.shields.io/badge/RabbitMQ-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
+[![Redis](https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white)](https://redis.io/)
+[![gRPC](https://img.shields.io/badge/gRPC-244C5A?logo=grpc&logoColor=white)](https://grpc.io/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791?logo=postgresql&logoColor=white)](https://postgresql.org/)
 [![AWS S3](https://img.shields.io/badge/AWS-S3-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/s3/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
@@ -31,8 +35,8 @@ GeoStream solves severe, real-world distributed systems problems:
 graph TD
     UI[Next.js Dashboard] <--> |SSE & MJPEG| API[Go Chi Router]
 
-    subgraph Go Concurrency Engine
-        API --> |Submit| Queue(Buffered Job Channel)
+    subgraph Go Orchestrator
+        API --> |Submit| Queue(RabbitMQ / Buffered Channel)
         Queue --> W1[Worker 1]
         Queue --> W2[Worker 2]
         W1 -.-> |Lease Heartbeat| DB
@@ -40,9 +44,11 @@ graph TD
 
     DB[(PostgreSQL)] --> |CAS Lock| Queue
 
-    W1 --> |Subprocess Pipes| Py[Python Engine]
+    W1 <--> |gRPC / Protobuf| Py[FastAPI Renderer Microservice]
 
-    subgraph Python Orbital & Render Engine
+    subgraph Python Microservice
+        Py --> |Cache Check| Redis[(Redis L1 Cache)]
+        Redis -.-> |Fallback| Disk[(Local Disk L2 Cache)]
         Py --> |SGP4 Math| TLE[(CelesTrak TLEs)]
         Py --> |Concurrent WMS| NASA[NASA GIBS WMS]
         Py --> |Alpha Blend| CV[OpenCV Compositor]
@@ -58,11 +64,14 @@ graph TD
 
 ## ⚙️ System Design Depth
 
-### 1. Concurrency & At-Least-Once Delivery
-- **Optimistic CAS Locking** via PostgreSQL `UPDATE WHERE status='PENDING'`. Workers compete for jobs atomically using Compare-And-Swap versioning, allowing multiple distributed nodes to pull from the queue safely with zero risk of duplicate processing. No Redis needed.
+### 1. Concurrency, Queuing & At-Least-Once Delivery
+- **Durable Message Queuing (RabbitMQ)** — Decoupled HTTP ingest from video rendering. Supports graceful degradation to Go in-memory channels if the broker is unavailable.
+- **Optimistic CAS Locking** via PostgreSQL `UPDATE WHERE status='PENDING'`. Workers compete for jobs atomically using Compare-And-Swap versioning, allowing multiple distributed nodes to pull from the queue safely with zero risk of duplicate processing.
 - **Bounded Worker Pools** — Go channel `queueSize` hard-caps memory pressure. Returns `HTTP 503` on saturation (backpressure) instead of crashing.
 
-### 2. Fault Tolerance & Crash Recovery
+### 2. Fault Tolerance, Microservices & Crash Recovery
+- **gRPC Protocol Negotiation** — The Go orchestrator communicates with the FastAPI renderer via high-performance binary Protocol Buffers (gRPC), with an automatic fallback to HTTP/JSON, and a final fallback to local OS subprocesses if network services fail.
+- **Circuit Breaker Pattern** — Custom 3-state circuit breaker (`CLOSED` → `OPEN` → `HALF_OPEN`) prevents cascading failures when the renderer microservice is under severe load.
 - **Lease Heartbeats** — Background goroutine continuously extends a PostgreSQL `lease_expiry` while Python is rendering. 
 - **Dead-Letter Sweeper** — Periodic goroutine reclaims expired leases from crashed workers and re-queues jobs. Zero data loss on node failure.
 
@@ -71,7 +80,8 @@ graph TD
 - Uses `sgp4` library to propagate Keplerian orbital elements in real-time, computing sub-second accurate positions.
 - **Clamp-and-Shift BBOX Algorithm** — Prevents WMS image warping at the International Date Line and poles by shifting the viewing box instead of clamping it.
 
-### 4. NASA WMS Pipeline
+### 4. NASA WMS Pipeline & Tiered Caching
+- **Tiered Caching (Redis L1 + Disk L2)** — Integrates Upstash Redis as an ultra-fast L1 cache for WMS map tiles, dramatically reducing NASA GIBS API calls. Implements graceful degradation to MD5-hashed local disk L2 cache if Redis memory limit is reached.
 - Covers 60 WMS Satellite Layers — MODIS True Color, VIIRS Night Lights, Thermal Anomalies, NDVI, Sea Surface Temp, Bathymetry, NEXRAD Radar, and more.
 - **Activity detection** uses alpha-channel pixel analysis (threshold=3) to distinguish real nighttime city lights from empty tiles.
 - **Date auto-scan** — Searches backwards from the event date up to 7 days to find the latest frame with valid imagery, respecting NASA GIBS's 48-hour processing latency.
@@ -182,6 +192,10 @@ python scripts/test_pipeline.py
 | `S3_BUCKET` | No | S3 bucket (leave empty for local storage) |
 | `AWS_ACCESS_KEY_ID` | No | AWS credentials |
 | `AWS_SECRET_ACCESS_KEY` | No | AWS credentials |
+| `RABBITMQ_URL` | No | CloudAMQP URL for job distribution |
+| `REDIS_URL` | No | Upstash Redis URL for L1 tile caching |
+| `RENDERER_GRPC_URL` | No | FastAPI renderer gRPC address (e.g., `renderer:50051`) |
+| `RENDERER_URL` | No | FastAPI renderer HTTP address (e.g., `http://renderer:8000`) |
 
 ---
 
