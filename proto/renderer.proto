@@ -1,0 +1,62 @@
+// Copyright 2026 Kushan Shah
+// SPDX-License-Identifier: Apache-2.0
+
+// GeoStream Renderer Service — gRPC contract definition.
+// This .proto file defines the API boundary between the Go orchestrator
+// and the Python renderer microservice using binary Protocol Buffers.
+//
+// Generate code:
+//   Go:     protoc --go_out=. --go-grpc_out=. proto/renderer.proto
+//   Python: python -m grpc_tools.protoc -I. --python_out=services/renderer --grpc_python_out=services/renderer proto/renderer.proto
+
+syntax = "proto3";
+
+package renderer;
+
+option go_package = "github.com/kushanj/geo-backend/internal/proto/renderer";
+
+// RendererService handles video rendering requests from the Go orchestrator.
+service RendererService {
+  // RenderVideo accepts rendering parameters and returns the generated video path.
+  rpc RenderVideo (RenderRequest) returns (RenderResponse);
+
+  // HealthCheck verifies the renderer service is operational.
+  rpc HealthCheck (HealthRequest) returns (HealthResponse);
+}
+
+// WMSLayer represents a single WMS imagery layer to composite.
+message WMSLayer {
+  string url = 1;
+  string name = 2;
+  double opacity = 3;
+}
+
+// RenderRequest contains all parameters needed to generate a geospatial video.
+message RenderRequest {
+  string job_id = 1;
+  repeated double bbox = 2;        // [minLng, minLat, maxLng, maxLat]
+  string start_date = 3;           // YYYY-MM-DD
+  string end_date = 4;             // YYYY-MM-DD
+  int32 fps = 5;
+  int32 frame_count = 6;
+  repeated WMSLayer layers = 7;
+  string time_step = 8;            // e.g., "1d", "1h", "10m"
+  string track_satellite = 9;      // e.g., "ISS", "TERRA"
+  string output_path = 10;
+}
+
+// RenderResponse contains the rendering result.
+message RenderResponse {
+  string status = 1;               // "completed" or "failed"
+  string video_path = 2;
+  repeated double metrics = 3;     // Per-frame activity percentages
+  double duration_seconds = 4;     // Wall-clock render time
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string cache_type = 2;
+  string version = 3;
+}
